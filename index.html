@@ -1,20 +1,24 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>Record3D Wi-Fi Streaming Demo</title>
 </head>
+
 <body>
     <h1>Record3D live-streamed video from your iPhone/iPad</h1>
     <video playsinline autoplay muted></video>
 
     <form id="form-start-remote-streaming">
-        <input type="text" placeholder="Enter an IP address or the hostname of your iPhone/iPad" id="remote-address" style="width: 26em;" />
+        <input type="text" placeholder="Enter an IP address or the hostname of your iPhone/iPad" id="remote-address"
+            style="width: 26em;" />
         <input type="submit" value="Press to start streaming" />
     </form>
 
     <p>Works best with Google Chrome or Safari. You may experience issues when using Firefox.</p>
-    <p>For more details, visit <a href="https://record3d.app/features" target="_blank">https://record3d.app/features</a></p>
+    <p>For more details, visit <a href="https://record3d.app/features" target="_blank">https://record3d.app/features</a>
+    </p>
 
     <script>
         class SignalingClient {
@@ -60,12 +64,29 @@
         const video = document.querySelector("video");
         const startReceivingStreamButton = document.querySelector("#form-start-remote-streaming");
         let peerConnection = new RTCPeerConnection();
-        let signalingClient = new SignalingClient('');
+        const senders = peerConnection.getSenders();
+        senders.forEach((sender) => {
+            if (sender.track.kind === 'video') {
+                // Change bitrate for video track here
+                const parameters = sender.getParameters()
+                if (!parameters.encodings) {
+                    parameters.encodings = [{}]
+                }
+                parameters.encodings[0].maxBitrate = 100 * 1000 * 100
+                sender.setParameters(parameters).then(() => {
+                    console.log('Bitrate changed successfuly');
+                }).catch(e => console.error(e))
+            }
+            if (sender.track.kind === 'audio') {
+                // Change bitrate for audio track here
+            }
+        })
+        let signalingServer = new SignalingServer('');
 
         startReceivingStreamButton.onsubmit = e => {
             e.preventDefault();
             let remoteAddress = document.querySelector("#remote-address").value;
-            if ( !remoteAddress.startsWith('http://') ) {
+            if (!remoteAddress.startsWith('http://')) {
                 remoteAddress = 'http://' + remoteAddress
             }
             console.log('Remote address: ', remoteAddress);
@@ -84,8 +105,23 @@
         peerConnection.onicecandidate = event => {
             if (event.candidate === null) {
                 // ICE Candidate gathering process finished, send answer to the iDevice.
-                let jsonData = {'type': 'answer', 'data': peerConnection.localDescription.sdp};
-                signalingClient.sendAnswer(jsonData);
+                let jsonData = { 'type': 'answer', 'data': peerConnection.localDescription.sdp };
+                var arr = peerConnection.localDescription.sdp.split("\r\n");
+                arr.forEach((str, i) => {
+                    if (/^a=fmtp:\d*/.test(str)) {
+                        arr[i] =
+                            str +
+                            ";x-google-max-bitrate=10000000;x-google-min-bitrate=1;x-google-start-bitrate=6000";
+                    } else if (/^a=mid:(1|video)/.test(str)) {
+                        arr[i] += "\r\nb=AS:10000000";
+                    }
+                });
+                peerConnection.localDescription.sdp = new RTCSessionDescription({
+                    type: "answer",
+                    sdp: arr.join("\r\n"),
+                });
+                signalingServer.sendAnswer(jsonData);
+                // console.log(jsonData['data']);
                 console.log('Finished ice candidate lookup. Sending answer.');
             }
         };
@@ -102,18 +138,48 @@
             // 1. Ask the iDevice for its offer.
             signalingClient.retrieveOffer()
                 .then(remoteOffer => {
-                    if ( remoteOffer === undefined )
-                    {
+                    if (remoteOffer === undefined) {
                         return;
                     }
                     // 2. Set the offer as the remote description, generate a suitable answer for it
                     //    and set the answer as the local description.
                     console.log(remoteOffer);
-
+                    var arr = remoteOffer.sdp.split("\r\n");
+                    arr.forEach((str, i) => {
+                        if (/^a=fmtp:\d*/.test(str)) {
+                            arr[i] =
+                                str +
+                                ";x-google-max-bitrate=10000000;x-google-min-bitrate=1;x-google-start-bitrate=6000";
+                        } else if (/^a=mid:(1|video)/.test(str)) {
+                            arr[i] += "\r\nb=AS:10000000";
+                        }
+                    });
+                    sdp = new RTCSessionDescription({
+                        type: "offer",
+                        sdp: arr.join("\r\n"),
+                    });
                     peerConnection
-                        .setRemoteDescription(remoteOffer)
-                        .then(() => peerConnection.createAnswer())
-                        .then(sdp => peerConnection.setLocalDescription(sdp));
+                        .setRemoteDescription(new RTCSessionDescription(sdp))
+                        .then(peerConnection.createAnswer().then(sdp => {
+                            var arr = sdp.sdp.split('\r\n');
+                            arr.forEach((str, i) => {
+                                if (/^a=fmtp:\d*/.test(str)) {
+                                    arr[i] = str + ';x-google-max-bitrate=10000000;x-google-min-bitrate=0;x-google-start-bitrate=6000';
+                                } else if (/^a=mid:(1|video)/.test(str)) {
+                                    arr[i] += '\r\nb=AS:10000000';
+                                }
+                            });
+                            sdp = new RTCSessionDescription({
+                                type: 'answer',
+                                sdp: arr.join('\r\n'),
+                            })
+                            peerConnection.setLocalDescription(sdp)
+                        }));
+
+                    //peerConnection
+                    //    .setRemoteDescription(remoteOffer)
+                    //    .then(() => peerConnection.createAnswer())
+                    //    .then(sdp => peerConnection.setLocalDescription(sdp));
 
                     // Now we wait for the ICE Tricke process to finish (see `peerConnection.onincecandidate`).
                     // Then we will send send our answer to the iDevice, which will start the stream.
@@ -122,4 +188,5 @@
 
     </script>
 </body>
+
 </html>
